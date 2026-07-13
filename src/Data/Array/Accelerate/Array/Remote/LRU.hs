@@ -255,11 +255,11 @@ mallocWithUsage
     -> ArrayData e
     -> Used task
     -> m (RemotePtr m (ScalarArrayDataR e))
-mallocWithUsage !mt !utbl !tp !ad !usage@(Used _ _ _ _ n _ _) = malloc'
+mallocWithUsage !mt !utbl !tp !ad !usage@(Used ts status count tasks n tp' weak_arr) = malloc'
   where
     malloc' :: HasCallStack => m (RemotePtr m (ScalarArrayDataR e))
     malloc' = do
-      mp <- Basic.malloc @e @m mt tp ad n :: m (Maybe (RemotePtr m (ScalarArrayDataR e)))
+      (mp, isUnmanaged) <- Basic.malloc @e @m mt tp ad n :: m (Maybe (RemotePtr m (ScalarArrayDataR e)), Bool)
       case mp of
         Nothing -> do
           success <- evictLRU utbl mt
@@ -267,7 +267,7 @@ mallocWithUsage !mt !utbl !tp !ad !usage@(Used _ _ _ _ n _ _) = malloc'
                      else internalError "Remote memory exhausted"
         Just p -> liftIO $ do
           key <- Basic.makeStableArray tp ad
-          HT.insert utbl key usage
+          HT.insert utbl key (Used ts (if isUnmanaged then Unmanaged else status) count tasks n tp' weak_arr)
           return p
 
 evictLRU

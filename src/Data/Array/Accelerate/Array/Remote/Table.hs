@@ -172,7 +172,7 @@ malloc :: forall a m. (HasCallStack, RemoteMemory m, MonadIO m)
        -> SingleType a
        -> ArrayData a
        -> Int
-       -> m (Maybe (RemotePtr m (ScalarArrayDataR a)))
+       -> m (Maybe (RemotePtr m (ScalarArrayDataR a)), Bool)
 malloc mt@(MemoryTable _ _ !nursery _) !tp !ad !n
   | SingleArrayDict <- singleArrayDict tp
   , SingleDict      <- singleDict tp
@@ -188,45 +188,43 @@ malloc mt@(MemoryTable _ _ !nursery _) !tp !ad !n
     let -- next highest multiple of f from x
         multiple x f  = (x + (f-1)) `quot` f
         bs            = chunk * multiple (n * sizeOf (undefined::(ScalarArrayDataR a))) chunk
+        insertManaged    = (False, \p' -> insert mt tp ad p' bs)
+        insertUnmanaged' = (True,  \p' -> insertUnmanaged mt tp ad p')
     --
     message ("malloc " % int % " bytes (" % int % " x " % int % " bytes, type=" % formatSingleType % ", pagesize=" % int % ")") bs n (sizeOf (undefined :: (ScalarArrayDataR a))) tp chunk
     --
-    mp <-
-      fmap (castRemotePtr @m)
-      <$> attempt "malloc/nursery" (liftIO $ N.lookup bs nursery)
-          `orElse`
-          attempt "malloc/new" (mallocRemote bs)
-          `orElse` do message "malloc/remote-malloc-failed (cleaning)"
-                      clean mt
-                      liftIO $ N.lookup bs nursery
-          `orElse` do message "malloc/remote-malloc-failed (purging)"
-                      purge mt
-                      mallocRemote bs
-          `orElse` do message "malloc/remote-malloc-failed (non-recoverable)"
-                      return Nothing
-    case mp of
-      Nothing -> return Nothing
-      Just p' -> do
-        insert mt tp ad p' bs
-        return mp
+    attempt "malloc/existing-remote"
+            insertUnmanaged'
+            (existingRemote tp ad) $
+        attempt "malloc/nursery"
+                insertManaged
+                (liftIO $ N.lookup bs nursery) $
+        attempt "malloc/new"
+                insertManaged
+                (mallocRemote bs) $
+        attempt "malloc/nursery-after-clean"
+                insertManaged
+                (clean mt >> liftIO (N.lookup bs nursery)) $
+        attempt "malloc/new-after-purge"
+                insertManaged
+                (purge mt >> mallocRemote bs) $ do
+        message "malloc/remote-malloc-failed (non-recoverable)"
+        return (Nothing, False)
   where
-    {-# INLINE orElse #-}
-    orElse :: m (Maybe x) -> m (Maybe x) -> m (Maybe x)
-    orElse this next = do
-      result <- this
-      case result of
-        Just{}  -> return result
-        Nothing -> next
-
     {-# INLINE attempt #-}
-    attempt :: Builder -> m (Maybe x) -> m (Maybe x)
-    attempt msg this = do
-      result <- this
+    attempt :: Builder
+            -> (Bool, RemotePtr m (ScalarArrayDataR a) -> m ())
+            -> m (Maybe (RemotePtr m b))
+            -> m (Maybe (RemotePtr m (ScalarArrayDataR a)), Bool)
+            -> m (Maybe (RemotePtr m (ScalarArrayDataR a)), Bool)
+    attempt msg (unmanaged, insert') this next = do
+      result <- fmap (castRemotePtr @m) <$> this
       case result of
-        Just{}  -> trace msg (return result)
-        Nothing -> return Nothing
-
-
+        Just p' -> do
+          insert' p'
+          trace msg $ return (result, unmanaged)
+        Nothing ->
+          next
 
 -- | Deallocate the device array associated with the given host-side array.
 -- Typically this should only be called in very specific circumstances.
@@ -255,6 +253,9 @@ freeStable (MemoryTable !ref _ !nrs _) !sa =
     case mw of
       Nothing ->
         message ("free/already-removed: " % formatStableArray) sa
+
+      Just (RemoteArray _ 0 _) ->
+        message ("free/unmanaged: " % formatStableArray) sa
 
       Just (RemoteArray !p !n _) -> do
         message ("free/nursery: " % formatStableArray % " of " % bytes') sa n

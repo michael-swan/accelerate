@@ -49,6 +49,11 @@ class (Applicative m, Monad m, MonadCatch m, MonadMask m) => RemoteMemory m wher
   -- | Pointers into this particular remote memory.
   type RemotePtr m :: Type -> Type
 
+  -- | Find existing remote memory paired with the provided buffer.
+  -- Returns Nothing if no such remote memory exists.
+  existingRemote :: SingleType e -> ScalarArrayData e -> m (Maybe (RemotePtr m e))
+  existingRemote _ _ = return Nothing
+
   -- | Attempt to allocate the given number of bytes in the remote memory space.
   -- Returns Nothing on failure.
   mallocRemote :: Int -> m (Maybe (RemotePtr m Word8))
