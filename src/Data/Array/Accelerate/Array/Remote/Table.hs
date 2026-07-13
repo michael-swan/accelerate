@@ -196,42 +196,46 @@ malloc mt@(MemoryTable _ _ !nursery _) !tp !ad !n
     --
     message ("malloc " % int % " bytes (" % int % " x " % int % " bytes, type=" % formatSingleType % ", pagesize=" % int % ")") bs n (sizeOf (undefined :: (ScalarArrayDataR a))) tp chunk
     --
-    mp <-
-      fmap (castRemotePtr @m)
-      <$> attempt "malloc/nursery" (liftIO $ N.lookup bs nursery)
-          `orElse`
-          attempt "malloc/new" (mallocRemote bs)
-          `orElse` do message "malloc/remote-malloc-failed (cleaning)"
-                      clean mt
-                      liftIO $ N.lookup bs nursery
-          `orElse` do message "malloc/remote-malloc-failed (purging)"
-                      purge mt
-                      mallocRemote bs
-          `orElse` do message "malloc/remote-malloc-failed (non-recoverable)"
-                      return Nothing
-    case mp of
-      Nothing -> return Nothing
-      Just p' -> do
-        insert mt tp ad p' bs
-        return mp
+    mbRemotePtr <-
+        attempt "malloc/existing-remote"
+                insertUnmanaged
+                (liftIO $ existingRemote ad) $
+        attempt "malloc/nursery"
+                insertManaged
+                (liftIO $ N.lookup bs nursery) $
+        attempt "malloc/new"
+                insertManaged
+                (mallocRemote bs) $
+        attempt "malloc/nursery-after-clean"
+                insertManaged
+                (clean mt >> liftIO (N.lookup bs nursery)) $
+        attempt "malloc/new-after-purge"
+                insertManaged
+                (purge mt >> mallocRemote bs) $ do
+        message "malloc/remote-malloc-failed (non-recoverable)"
+        return Nothing
+    pure $ castRemotePtr @m <$> mbRemotePtr
   where
-    {-# INLINE orElse #-}
-    orElse :: m (Maybe x) -> m (Maybe x) -> m (Maybe x)
-    orElse this next = do
-      result <- this
-      case result of
-        Just{}  -> return result
-        Nothing -> next
-
     {-# INLINE attempt #-}
-    attempt :: Builder -> m (Maybe x) -> m (Maybe x)
-    attempt msg this = do
+    attempt :: Builder
+            -> (RemotePtr m (ScalarArrayDataR a) -> m ())
+            -> m (Maybe (RemotePtr m (ScalarArrayDataR a)))
+            -> m (Maybe (RemotePtr m (ScalarArrayDataR a)))
+            -> m (Maybe (RemotePtr m (ScalarArrayDataR a)))
+    attempt msg insert' this next = do
       result <- this
       case result of
-        Just{}  -> trace msg (return result)
-        Nothing -> return Nothing
+        Just p' -> do
+          insert' p'
+          trace msg (return mp)
+        Nothing ->
+          next
 
+    {-# INLINE insertManaged #-}
+    insertManaged p' = insert mt tp ad p' bs
 
+    {-# INLINE insertUnmanaged #-}
+    insertUnmanaged p' = insertUnmanaged mt tp ad p'
 
 -- | Deallocate the device array associated with the given host-side array.
 -- Typically this should only be called in very specific circumstances.

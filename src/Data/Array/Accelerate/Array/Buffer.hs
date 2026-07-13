@@ -40,7 +40,7 @@ module Data.Array.Accelerate.Array.Buffer (
   indexBuffers, indexBuffers', indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
   rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers,
-  veryUnsafeUnfreezeBuffers, bufferToList, bufferRetainAndGetRef, bufferRelease, bufferFromPtr,
+  veryUnsafeUnfreezeBuffers, bufferToList, withMutableBufferPtr, bufferRetainAndGetRef, bufferRelease, bufferFromPtr,
   memoryByteSize,
 
   -- * Type macros
@@ -369,6 +369,8 @@ bufferToList tp n buffer = go 0
     go !i | i >= n    = []
           | otherwise = indexBuffer tp buffer i : go (i + 1)
 
+withMutableBufferPtr :: MutableBuffer e -> (Ptr e -> IO a) -> IO a
+withMutableBufferPtr (MutableBuffer foreignPtr) = withForeignPtr foreignPtr
 
 bufferRetainAndGetRef :: Buffer e -> IO (Ptr e)
 bufferRetainAndGetRef (Buffer foreignPtr) = withForeignPtr foreignPtr $ \ptr -> do
